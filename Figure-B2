@@ -1,0 +1,174 @@
+#Binomial model. Gregarine data are considered as presence-absence, water mites are considered as numeric
+library(tidyverse)
+library(glmmTMB) 
+library(ggeffects)
+library(ggpubr)
+library(MuMIn)
+library(viridis)
+library(mgcv)
+library(MuMIn)
+library(ggpubfigs)
+library(performance)
+library(RColorBrewer)
+library(cowplot)
+
+theme_set(theme_pubr())
+
+
+coi2017.dat <- read.csv(file="./Data/Coinfection_data_2017.csv")
+env.dat <- read.csv(file="./Data/SummarizedData_2017.csv")
+coi2017.dat <- left_join(coi2017.dat, env.dat, by="Lake")
+coi2017.dat$Year <- "2017"
+
+coi2019.dat <- read.csv(file="./Data/Parasite_Data_2019.csv")
+coi2019.dat$Year <- "2019"
+env.dat <- read.csv(file="./Data/SummarizedData_2019.csv")
+coi2019.dat <- left_join(coi2019.dat, env.dat, by="Lake")
+
+
+#rename stuff for consistency between the two datasets
+coi2017.dat <- coi2017.dat %>% rename(total_holes  = "Total_Holes", Gregarines = "Total_gregarines")
+coi2019.dat <- coi2019.dat %>% rename(Total_Mites="final_mite")
+
+
+coi.dat <- rbind(coi2017.dat, coi2019.dat) 
+
+coi.dat <- coi.dat %>% mutate(Mites=total_holes + Total_Mites)
+
+coi.dat$Species <- as.factor(coi.dat$Species)
+coi.dat$Lake    <- as.factor(coi.dat$Lake)
+coi.dat$Year    <- as.factor(coi.dat$Year)
+
+coi.dat$COI_Infected <- coi.dat$Greg_Infected*coi.dat$Mite_Infected
+coi.dat$M2 <- coi.dat$Mites^2
+
+nSpecies <- nlevels(coi.dat$Species)
+
+ggplot(data=coi.dat, aes(x=total_holes, y=Gregarines, col=Species)) +
+  geom_point() +
+  geom_smooth()
+
+quadenv.bin.mod <- env.bin.mod <- linenv.bin.mod <- gamm.mod <- list()
+quadenv.bin.mod <- env.bin.mod <- linenv.bin.mod <- list()
+quadenv.zip.mod <- env.zip.mod <- linenv.zip.mod <- list()
+
+quadenv.bin.pred <- NULL
+
+for(i in 1:nlevels(coi.dat$Species)) {
+  #this is our analysis
+    env.bin.mod[[i]] <- glmmTMB(Greg_Infected ~ scale(Shoot.Countm2) + scale(Prey.DensityL) + scale(pH) + Year + (1|Lake), data=filter(coi.dat, Species==levels(coi.dat$Species)[i]), dispformula = ~ 1,  family=binomial, REML=F)
+  
+  linenv.bin.mod[[i]] <- glmmTMB(Greg_Infected ~ Mites + Shoot.Countm2 + Prey.DensityL + pH + Year + (1|Lake), data=filter(coi.dat, Species==levels(coi.dat$Species)[i]), dispformula = ~  1, family=binomial, REML=F)
+  
+  quadenv.bin.mod[[i]] <- glmmTMB(Greg_Infected ~ Mites + I(Mites^2) + Shoot.Countm2 + Prey.DensityL + pH + Year + (Mites|Lake), dispformula = ~  1,  data=filter(coi.dat, Species==levels(coi.dat$Species)[i]), family=binomial, REML=F)
+  #AICc selects nonlinear effect in ENSI and ISPO
+  
+  r2(quadenv.bin.mod[[i]])
+  AICc.vec <- c(AICc(env.bin.mod[[i]]), AICc(linenv.bin.mod[[i]]), AICc(quadenv.bin.mod[[i]]))
+  
+  #print(AICc.vec)
+  print(AICc.vec - min(AICc.vec))
+  
+}
+
+#get predictions of best models
+x <- 0:600
+lin.dat <- data.frame(Mites=x, `I(Mites^2)`= x^2, Year="2017", Shoot.Countm2=mean(coi.dat$Shoot.Countm2), Prey.DensityL=mean(coi.dat$Prey.DensityL), pH=mean(coi.dat$pH), Lake="New" )
+
+
+predict.dat <- rbind(data.frame(Mites=x, Gregarines=(predict(env.bin.mod[[1]], newdata=lin.dat, type="response")), species="ENBA"),
+                     data.frame(Mites=x, Gregarines=(predict(env.bin.mod[[2]], newdata=lin.dat, type="response")), species="ENEX"), 
+                     data.frame(Mites=x, Gregarines=(predict(env.bin.mod[[3]], newdata=lin.dat, type="response")), species="ENSI"), 
+                     data.frame(Mites=x, Gregarines=(predict(linenv.bin.mod[[4]], newdata=lin.dat, type="response")), species="ENTR"),
+                     data.frame(Mites=x, Gregarines=(predict(quadenv.bin.mod[[5]], newdata=lin.dat, type="response")), species="ISPO"))
+
+
+p.predict <- ggplot(data=coi.dat) +
+  geom_point(data=coi.dat, aes(x=Mites, y=Greg_Infected, col=Species), alpha=0.25) +
+  geom_line(data=predict.dat, aes(x=Mites, y=Gregarines, col=species)) +
+  scale_y_sqrt() +
+  scale_x_sqrt() +
+  lims(x=c(0, 60), y=c(c(0, 1))) +
+  labs(x="Mite load", y="Gregarine load", col="Species") +
+  scale_color_manual(values = friendly_pal("ibm_five"))
+plot(p.predict)
+save_plot(p.predict, filename="./Figures/GLM_predictions.pdf")
+
+
+
+species1 <- data.frame(as.data.frame(ggpredict(linenv.bin.mod[[1]], terms=c("Mites", "Lake"), type="random")), Species="ENBA") %>% rename(Lake=group)
+temp <- as.data.frame(ggpredict(env.bin.mod[[1]], terms="Lake", type="random")) %>% rename(Lake =x)
+species1 <- species1 %>% select(x, Lake, Species) %>% left_join(temp[,-6], by="Lake")
+
+
+species2 <- data.frame(as.data.frame(ggpredict(linenv.bin.mod[[2]], terms=c("Mites", "Lake"), type="random")), Species="ENEX") %>% rename(Lake=group)
+temp <- as.data.frame(ggpredict(env.bin.mod[[2]], terms="Lake", type="random")) %>% rename(Lake =x)
+species2 <- species2 %>% select(x, Lake, Species) %>% left_join(temp[,-6], by="Lake")
+
+species3 <- data.frame(as.data.frame(ggpredict(linenv.bin.mod[[3]], terms=c("Mites", "Lake"), type="random")), Species="ENSI") %>% rename(Lake=group)
+temp <- as.data.frame(ggpredict(env.bin.mod[[3]], terms="Lake", type="random")) %>% rename(Lake =x)
+species3 <- species3 %>% select(x, Lake, Species) %>% left_join(temp[,-6], by="Lake")
+
+
+species4 <- data.frame(as.data.frame(ggpredict(linenv.bin.mod[[4]], terms=c("Mites", "Lake"), type="random")), Species="ENTR") %>% rename(Lake=group)
+
+species5 <- data.frame(as.data.frame(ggpredict(quadenv.bin.mod[[5]], terms=c("Mites[0:100]", "Lake"), type="random")), Species="ISPO") %>% rename(Lake=group)
+
+df <- bind_rows(species1, species2, species3, species4, species5)
+df <- df %>% rename(Mites=x, Gregarines=predicted)#, Lake=group)
+
+
+mypal <- colorRampPalette( brewer.pal(9, "Blues" )[-(1:2)] )
+
+p.predict <- ggplot(data=coi.dat) +
+  geom_point(data=coi.dat, aes(x=Mites, y=Greg_Infected), alpha=0.25) +
+  geom_line(data=df, aes(x=Mites, y=Gregarines, col=Lake, linetype=Lake), linewidth=0.75) +
+  scale_x_sqrt() +
+  labs(x="Mite load", y="Gregarine presence", col="Species") +
+  scale_color_manual( values = mypal(13) ) + 
+    facet_wrap(~ Species, ncol=1, scales = "free") +
+  guides(color = "none") +
+  guides(linetype="none") +
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank()
+  )
+  
+
+  plot(p.predict)
+  
+  save_plot(p.predict, filename="./Figures/GLM_binomial_predictions_species_byLake.pdf", base_aspect_ratio=0.25, base_height = 14)
+
+
+  
+
+  
+ispo.coi.dat <- filter(coi.dat, Species=="ISPO")
+df.ispo <- filter(df, Species=="ISPO")
+for(i in 1:nlevels(df.ispo$Lake)) {
+  curr.lake <- levels(df.ispo$Lake)[i]
+  temp <- ispo.coi.dat %>% filter(Lake == curr.lake)
+  limit <- max(temp$Mites)
+  
+  df.ispo <- df.ispo[-which(df.ispo$Lake == curr.lake & df.ispo$Mites > limit),]
+}
+
+p.predict2 <- ggplot(data=ispo.coi.dat) +
+    geom_point(data=ispo.coi.dat, aes(x=Mites, y=Greg_Infected), alpha=0.25) +
+    geom_line(data=df.ispo, aes(x=Mites, y=Gregarines, col=Lake, linetype=Lake), linewidth=0.75) +
+    scale_x_sqrt() +
+    labs(x="Mite load", y="Gregarine presence", col="Species") +
+    scale_color_manual( values = mypal(13) ) + 
+    facet_wrap(~ Lake, scales = "free", ncol=2) +
+    guides(color = "none") +
+    guides(linetype="none") +
+  theme(
+    strip.background = element_blank(),
+    strip.text.x = element_blank()
+  )
+  
+  plot(p.predict2)
+  
+  save_plot(p.predict2, filename="./Figures/GLM_binomial_predictions_ISPO_byLake.pdf", base_aspect_ratio=0.5, base_height = 14)
+  
+  
