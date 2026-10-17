@@ -1,0 +1,167 @@
+##using the Hasik et al data to explore the variation in infection by 
+#environmental factors and number/presence of mites
+library(tidyverse)
+library(glmmTMB) 
+library(ggeffects)
+library(ggpubr)
+library(MuMIn)
+library(viridis)
+library(mgcv)
+library(MuMIn)
+#library(ggpubfigs)
+library(performance)
+library(RColorBrewer)
+library(cowplot)
+theme_set(theme_pubr())
+
+
+coi2017.dat <- read.csv(file="./Data/Coinfection_data_2017.csv")
+env.dat <- read.csv(file="./Data/SummarizedData_2017.csv")
+coi2017.dat <- left_join(coi2017.dat, env.dat, by="Lake")
+coi2017.dat$Year <- "2017"
+
+coi2019.dat <- read.csv(file="./Data/Parasite_Data_2019.csv")
+coi2019.dat$Year <- "2019"
+env.dat <- read.csv(file="./Data/SummarizedData_2019.csv")
+coi2019.dat <- left_join(coi2019.dat, env.dat, by="Lake")
+
+
+#rename stuff for consistency between the two datasets
+coi2017.dat <- coi2017.dat %>% rename(total_holes  = "Total_Holes", Gregarines = "Total_gregarines")
+coi2019.dat <- coi2019.dat %>% rename(Total_Mites="final_mite")
+
+
+coi.dat <- rbind(coi2017.dat, coi2019.dat)
+coi.dat$Date <- mdy(coi.dat$Date)
+coi.dat$Month <- as.factor(month(coi.dat$Date))
+
+coi.dat <- coi.dat %>% mutate(Mites=total_holes + Total_Mites)
+
+coi.dat$Species <- as.factor(coi.dat$Species)
+coi.dat$Lake    <- as.factor(coi.dat$Lake)
+coi.dat$Year    <- as.factor(coi.dat$Year)
+
+coi.dat$COI_Infected <- coi.dat$Greg_Infected*coi.dat$Mite_Infected
+coi.dat$M2 <- coi.dat$Mites^2
+
+
+nSpecies <- nlevels(coi.dat$Species)
+
+ggplot(data=coi.dat, aes(x=total_holes, y=Gregarines, col=Species)) +
+  geom_point() +
+  geom_smooth()
+
+quadenv.bin.mod <- env.bin.mod <- linenv.bin.mod <- gamm.mod <- list()
+quadenv.nbin.mod <- env.nbin.mod <- linenv.nbin.mod <- list()
+quadenv.zip.mod <- env.zip.mod <- linenv.zip.mod <- list()
+
+quadenv.nbin.pred <- NULL
+
+
+
+for(i in 1:nlevels(coi.dat$Species)) {
+  #this is our analysis
+  curr.data <- filter(coi.dat, Species==levels(coi.dat$Species)[i])
+  curr.data$Mites <- scale(curr.data$Mites)
+    env.nbin.mod[[i]] <- glmmTMB(Gregarines ~ Shoot.Countm2 + Prey.DensityL + pH + Year + Month+ (1|Lake), data=curr.data, dispformula = ~ 1,  family=nbinom2, REML=F)
+  
+  linenv.nbin.mod[[i]] <- glmmTMB(Gregarines ~  I(Mites) + Shoot.Countm2 + Prey.DensityL + pH +  Year + (1|Lake), data=curr.data, family=nbinom2, REML=F)
+  
+  quadenv.nbin.mod[[i]] <- glmmTMB(Gregarines ~ Mites + I(Mites^2) + Shoot.Countm2 + Prey.DensityL + pH + Year + Month + (1|Lake), data=curr.data, family=nbinom2, REML=F)
+  
+  #AICc selects nonlinear effect in ENSI and ISPO
+  #these outputs are used to generate Table 3
+  r2(env.nbin.mod[[i]], tolerance=1e-10)
+  icc(env.nbin.mod[[i]])
+  r.squaredGLMM(env.nbin.mod[[i]])
+  r2(linenv.nbin.mod[[i]], tolerance=1e-10)
+  r.squaredGLMM(linenv.nbin.mod[[i]])
+  r2(quadenv.nbin.mod[[i]], tolerance=1e-10)
+  r.squaredGLMM(quadenv.nbin.mod[[i]])
+  
+  #these AIC valaues are used to generate Table 4
+  AICc.vec <- c(AICc(env.nbin.mod[[i]]), AICc(linenv.nbin.mod[[i]]), AICc(quadenv.nbin.mod[[i]]))
+  
+  print(AICc.vec)
+  print(AICc.vec - min(AICc.vec))
+
+  data=filter(coi.dat, Species==levels(coi.dat$Species)[i])
+  
+  sum(table(data$Lake))
+  table(data$Greg_Infected)
+  table(data$Lake)
+  table(data$Lake, data$Greg_Infected)
+  
+  #these outputs are used to generate Table 5, Table C1, Table C3, Table C4, and Table C5
+  summary(env.nbin.mod[[i]])
+  summary(linenv.nbin.mod[[i]])
+  summary(quadenv.nbin.mod[[i]])
+  
+  print('-----')
+}
+
+#check collinearity
+check_collinearity(env.nbin.mod[[1]]) 
+check_collinearity(env.nbin.mod[[2]])
+check_collinearity(env.nbin.mod[[3]])
+check_collinearity(linenv.nbin.mod[[4]])
+check_collinearity(quadenv.nbin.mod[[5]])
+
+#get predictions of best models
+#This code is used to generate figure 2
+x <- 0:600
+lin.dat <- data.frame(Mites=x, `I(Mites^2)`= x^2, Year="2017", Shoot.Countm2=mean(coi.dat$Shoot.Countm2), Prey.DensityL=mean(coi.dat$Prey.DensityL), pH=mean(coi.dat$pH), Lake="New" )
+
+
+predict.dat <- rbind(data.frame(Mites=x, Gregarines=exp(predict(linenv.nbin.mod[[1]], newdata=lin.dat)), species="ENBA"),
+                     data.frame(Mites=x, Gregarines=exp(predict(linenv.nbin.mod[[2]], newdata=lin.dat)), species="ENEX"), 
+                     data.frame(Mites=x, Gregarines=exp(predict(env.nbin.mod[[3]], newdata=lin.dat)), species="ENSI"), 
+                     data.frame(Mites=x, Gregarines=exp(predict(linenv.nbin.mod[[4]], newdata=lin.dat)), species="ENTR"),
+                     data.frame(Mites=x, Gregarines=exp(predict(quadenv.nbin.mod[[5]], newdata=lin.dat)), species="ISPO"))
+
+
+p.predict <- ggplot(data=coi.dat) +
+  geom_point(data=coi.dat, aes(x=Mites, y=Gregarines, col=Species), alpha=0.25) +
+  geom_line(data=predict.dat, aes(x=Mites, y=Gregarines, col=species)) +
+  scale_y_sqrt() +
+  scale_x_sqrt() +
+  #lims(x=c(0, 60), y=c(c(0, 10))) +
+  labs(x="Mite load", y="Gregarine load", col="Species") +
+  scale_color_manual(values = friendly_pal("ibm_five"))
+plot(p.predict)
+save_plot(p.predict, filename="./Figures/GLM_predictions.pdf")
+
+
+species1 <- data.frame(as.data.frame(ggpredict(linenv.nbin.mod[[1]], terms=c("Mites", "Lake"), type="random")), Species="ENBA") %>% rename(Lake=group)
+temp <- as.data.frame(ggpredict(env.nbin.mod[[1]], terms="Lake", type="random")) %>% rename(Lake =x)
+species1 <- species1 %>% select(-predicted) %>% left_join(temp, by="Lake")
+
+
+species2 <- data.frame(as.data.frame(ggpredict(linenv.zip.mod[[2]], terms=c("Mites", "Lake"), type="random")), Species="ENEX") %>% rename(Lake=group)
+species3 <- data.frame(as.data.frame(ggpredict(linenv.nbin.mod[[3]], terms=c("Mites", "Lake"), type="random")), Species="ENSI") %>% rename(Lake=group)
+temp <- as.data.frame(ggpredict(env.nbin.mod[[1]], terms="Lake", type="random")) %>% rename(Lake =x)
+species3 <- species3 %>% select(-predicted) %>% left_join(temp, by="Lake")
+
+
+species4 <- data.frame(as.data.frame(ggpredict(linenv.zip.mod[[4]], terms=c("Mites", "Lake"), type="random")), Species="ENTR") %>% rename(Lake=group)
+species5 <- data.frame(as.data.frame(ggpredict(quadenv.zip.mod[[5]], terms=c("Mites", "Lake"), type="random")), Species="ISPO") %>% rename(Lake=group)
+
+df <- rbind(species1, species2, species3, species4, species5)
+df <- df %>% rename(Mites=x, Gregarines=predicted, Lake=group)
+
+
+mypal <- colorRampPalette( brewer.pal(9, "Blues" )[-(1:2)] )
+
+p.predict <- ggplot(data=coi.dat) +
+  geom_point(data=coi.dat, aes(x=Mites, y=Gregarines), alpha=0.25) +
+  geom_line(data=df, aes(x=Mites, y=Gregarines, col=Lake, linetype=Lake), linewidth=0.75) +
+  scale_y_sqrt() +
+  scale_x_sqrt() +
+  labs(x="Mite load", y="Gregarine load", col="Species") +
+  scale_color_manual( values = mypal(13) ) + 
+    facet_wrap(~ Species) +
+  guides(color = "none")
+
+  plot(p.predict)
+  
+  save_plot(p.predict, filename="./Figures/GLM_predictions_species_byLake.pdf", base_aspect_ratio=1.5, base_height = 7)
