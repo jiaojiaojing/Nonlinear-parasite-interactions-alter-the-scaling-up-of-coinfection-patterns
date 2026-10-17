@@ -1,0 +1,228 @@
+library("tidyverse")
+library(rjags)
+library(runjags)
+
+###
+n.burnin = 1e3
+n.sample = 1e3
+####
+
+coi.dat <- read.csv(file="./Data/Coinfection_data_2017.csv")
+env.dat <- read.csv(file="./Data/SummarizedData_2017.csv")
+coi.dat <- left_join(coi.dat, env.dat, by="Lake")
+
+
+
+par.dat <- read.csv(file="./Data/Parasite_Data_2019.csv")
+env.dat <- read.csv(file="./Data/SummarizedData_2019.csv")
+par.dat <- left_join(par.dat, env.dat, by="Lake")
+
+
+#coi.dat <- read.csv(file="./Data/Coinfection_data_2017.csv")
+coi.dat <- coi.dat %>% rename(total_holes  = "Total_Holes", Gregarines = "Total_gregarines")
+par.dat <- par.dat %>% rename(Total_Mites="final_mite")
+
+
+
+par.dat <- rbind(coi.dat, par.dat)
+
+par.dat <- par.dat %>% filter(Species != "ENEX") #%>% filter(Species != "ENEX", Species != "ENTR") #very littlle coinfection for this species
+y1 <- par.dat$Greg_Infected
+#y2 <- par.dat$Total_Holes
+
+ggplot(data=par.dat, aes(x=Gregarines, y=total_holes, col=Lake, shape=Species)) +
+  geom_point()
+
+N <- length(y1)
+
+beta0 <- 1
+beta1 <- 1
+
+x.Preds  <-  model.matrix( ~ total_holes*Species-1, data = par.dat)
+x.Date <- model.matrix( ~ Date-1, data = par.dat)
+x.Site <- model.matrix( ~ Lake-1, data = par.dat)
+n.Site <- dim(x.Site)[2]
+
+x.Species <- model.matrix( ~ Species-1, data = par.dat)
+#x.Env     <- model.matrix( ~ Fish.Densitym2 + Shoot.Countm2 + Prey.DensityL + pH, data = par.dat)[,-1]
+#n.Species <- dim(x.Species)[2]
+#n.Env     <- dim(x.Env)[2]
+n.Preds <- dim(x.Preds)[2]
+
+forJags <- list(y1=y1,
+                N=N,
+                X.lake = x.Site,
+                X.pred = x.Preds,
+                mu.beta=rep(0, n.Preds),
+                tau.beta=diag(.0001, n.Preds),
+                mu.alpha=rep(0, n.Site),
+                tau.alpha=diag(1, n.Site)
+                )
+
+linMod <- "
+  model {
+  
+    for (i in 1:N) {
+      y1[i] ~ dbern(p1[i])  
+      logit(p1[i]) <-  mu + inprod(beta[], X.pred[i,]) + inprod(alpha[], X.lake[i,]) + eta[i]
+      eta[i] ~ dnorm(0, tau)
+    
+    }
+    
+    #tau[1:2, 1:2] ~ dwish(x2[1:2, 1:2], 2)
+    #sigma <- inverse(tau)
+    #rho <- sigma[1,2]/sqrt(sigma[1,1]*sigma[2,2])
+    tau ~ dgamma(0.1, 0.1)
+    sigma <- 1/tau
+    mu ~ dnorm(0, 0.001)
+    
+    beta ~ dmnorm(mu.beta, beta.prec*tau.beta)
+    
+    alpha ~ dmnorm(mu.alpha, alpha.prec*tau.alpha)
+
+    beta.prec   ~ dgamma(0.01, 0.01)
+    alpha.prec  ~ dgamma(0.01, 0.01)
+
+    beta.se <- pow(beta.prec, -2)
+    alpha.se <- pow(alpha.prec, -2)
+
+  }
+"
+
+saturatingMod <- "
+  model {
+  
+    for (i in 1:N) {
+      y1[i] ~ dbern(p1[i])
+      x.val[i] <- exp(mu + inprod(beta[], X.pred[i,]))
+      #x2.val[i] <-  exp(mu2 + inprod(beta2[], X.pred[i,]))
+      
+      #logit(p1[i]) <-  (x.val[i])/ (1 + x2.val[i])  + inprod(alpha[], X.lake[i,]) + eta[i]
+      logit(p1[i]) <-  mu3 + (x.val[i]) + inprod(alpha[], X.lake[i,]) + eta[i]
+      eta[i] ~ dnorm(0, tau)
+    }
+    
+    tau ~ dgamma(0.1, 0.1)
+    sigma <- 1/tau
+    mu ~ dnorm(0, 0.001)
+    mu2 ~ dnorm(0, 0.001)\
+    mu3 ~ dnorm(0, 0.001)
+    
+    beta  ~ dmnorm(mu.beta, beta.prec*tau.beta)
+    #beta2 ~ dmnorm(mu.beta, beta2.prec*tau.beta)
+    
+    alpha ~ dmnorm(mu.alpha, alpha.prec*tau.alpha)
+
+    beta.prec   ~ dgamma(0.01, 0.01)
+    beta2.prec   ~ dgamma(0.01, 0.01)
+    alpha.prec  ~ dgamma(0.01, 0.01)
+
+    beta.se <- pow(beta.prec, -2)
+    alpha.se <- pow(alpha.prec, -2)
+
+  }
+"
+
+nonlinMod <- "
+  model {
+  
+    for (i in 1:N) {
+      y1[i] ~ dbern(p1[i])  
+      logit(p1[i]) <-  mu3 + exp(mu + inprod(beta[], X.pred[i,]))*(exp(-exp(mu2 + inprod(beta2[], X.pred[i,])))) + inprod(alpha[], X.lake[i,]) + eta[i]
+      eta[i] ~ dnorm(0, tau)
+    }
+    
+    tau ~ dgamma(0.1, 0.1)
+    sigma <- 1/tau
+    mu ~ dnorm(0, 0.001)
+    mu2 ~ dnorm(0, 0.001)
+    mu3 ~ dnorm(0, 0.001)
+    
+    beta  ~ dmnorm(mu.beta, beta.prec*tau.beta)
+    beta2 ~ dmnorm(mu.beta, beta2.prec*tau.beta)
+    
+    alpha ~ dmnorm(mu.alpha, alpha.prec*tau.alpha)
+
+    beta.prec   ~ dgamma(0.01, 0.01)
+    beta2.prec   ~ dgamma(0.01, 0.01)
+    alpha.prec  ~ dgamma(0.01, 0.01)
+
+    beta.se <- pow(beta.prec, -2)
+    beta2.se <- pow(beta2.prec, -2)
+    alpha.se <- pow(alpha.prec, -2)
+
+  }
+"
+linResults <- run.jags(linMod, 
+                    monitor=c("alpha", "beta","mu",  "sigma", "alpha.se", "beta.se", "DIC"), 
+                    data=forJags,
+                    n.chains=4,
+                    burnin=n.burnin,
+                    sample=n.sample,
+                    adapt=1e4) # DIC = 3110.244
+
+
+x.Preds   <-  model.matrix( ~ total_holes*Species + I(total_holes^2)*Species - 1, data = par.dat)
+n.Preds   <- dim(x.Preds)[2]
+
+forJags <- list(y1=y1,
+                N=N,
+                X.lake = x.Site,
+                X.pred = x.Preds,
+                mu.beta=rep(0, n.Preds),
+                tau.beta=diag(.0001, n.Preds),
+                mu.alpha=rep(0, n.Site),
+                tau.alpha=diag(1, n.Site))
+
+quadResults <- run.jags(linMod, 
+                       monitor=c("alpha", "beta","mu",  "sigma", "alpha.se", "beta.se", "DIC"), 
+                       data=forJags,
+                       n.chains=4,
+                       burnin=n.burnin,
+                       sample=n.sample,
+                       adapt=1e4) #DIC 3104.255
+
+
+x.Preds   <-  model.matrix( ~ total_holes + Species - 1, data = par.dat)
+n.Preds   <- dim(x.Preds)[2]
+
+forJags <- list(y1=y1,
+                N=N,
+                X.lake = x.Site,
+                X.pred = x.Preds,
+                mu.beta=rep(0, n.Preds),
+                tau.beta=diag(.0001, n.Preds),
+                mu.alpha=rep(0, n.Site),
+                tau.alpha=diag(1, n.Site))
+
+
+
+satResults <- run.jags(saturatingMod, 
+                       monitor=c("alpha", "beta", "beta2", "mu", "mu2",  "sigma", "alpha.se", "beta.se", "tau", "DIC"), 
+                       data=forJags,
+                       n.chains=4,
+                       burnin=n.burnin,
+                       sample=n.sample,
+                       adapt=1e3) #DIC 3187.249
+
+x.Preds   <-  model.matrix( ~ total_holes + Species - 1, data = par.dat)
+n.Preds   <- dim(x.Preds)[2]
+
+forJags <- list(y1=y1,
+                N=N,
+                X.lake = x.Site,
+                X.pred = x.Preds,
+                mu.beta=rep(0, n.Preds),
+                tau.beta=diag(.0001, n.Preds),
+                mu.alpha=rep(0, n.Site),
+                tau.alpha=diag(1, n.Site))
+
+nonlinResults <- run.jags(nonlinMod, 
+                          monitor=c("alpha", "beta", "beta2", "mu", "mu2", "mu3", "sigma", "alpha.se", "beta.se", "DIC"), 
+                          data=forJags,
+                          n.chains=4,
+                          burnin=n.burnin,
+                          sample=n.sample,
+                          adapt=1e4) #DIC 3302.326
+
+save.image(file="./Output/Coinfection_presence_models.Rmd")
