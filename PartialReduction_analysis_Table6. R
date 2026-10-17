@@ -7,7 +7,7 @@ library(MuMIn)
 library(viridis)
 library(mgcv)
 library(MuMIn)
-library(ggpubfigs)
+library(ggpubr)
 library(performance)
 library(RColorBrewer)
 library(cowplot)
@@ -32,6 +32,8 @@ coi2019.dat <- coi2019.dat %>% rename(Total_Mites="final_mite")
 
 
 coi.dat <- rbind(coi2017.dat, coi2019.dat) 
+coi.dat$Date <- mdy(coi.dat$Date)
+coi.dat$Month <- as.factor(month(coi.dat$Date))
 
 coi.dat <- coi.dat %>% mutate(Mites=total_holes + Total_Mites)
 
@@ -56,19 +58,22 @@ quadenv.bin.pred <- NULL
 
 for(i in 1:nlevels(coi.dat$Species)) {
   #this is our analysis
-    env.bin.mod[[i]] <- glmmTMB(Greg_Infected ~ scale(Shoot.Countm2) + scale(Prey.DensityL) + scale(pH) + Year + (1|Lake), data=filter(coi.dat, Species==levels(coi.dat$Species)[i]), dispformula = ~ 1,  family=binomial, REML=F)
+    env.bin.mod[[i]] <- glmmTMB(Greg_Infected ~  scale(Shoot.Countm2) + scale(Prey.DensityL) + scale(pH) + Year + (1|Lake), data=filter(coi.dat, Species==levels(coi.dat$Species)[i]), dispformula = ~ 1,  family=binomial, REML=F)
   
   linenv.bin.mod[[i]] <- glmmTMB(Greg_Infected ~ Mites + Shoot.Countm2 + Prey.DensityL + pH + Year + (1|Lake), data=filter(coi.dat, Species==levels(coi.dat$Species)[i]), dispformula = ~  1, family=binomial, REML=F)
   
-  quadenv.bin.mod[[i]] <- glmmTMB(Greg_Infected ~ Mites + I(Mites^2) + Shoot.Countm2 + Prey.DensityL + pH + Year + (Mites|Lake), dispformula = ~  1,  data=filter(coi.dat, Species==levels(coi.dat$Species)[i]), family=binomial, REML=F)
+  quadenv.bin.mod[[i]] <- glmmTMB(Greg_Infected ~ Mites + I(Mites^2) + Shoot.Countm2 + Prey.DensityL + pH + Year + (1|Lake), dispformula = ~  1,  data=filter(coi.dat, Species==levels(coi.dat$Species)[i]), family=binomial, REML=F)
   #AICc selects nonlinear effect in ENSI and ISPO
   
   r2(quadenv.bin.mod[[i]])
   AICc.vec <- c(AICc(env.bin.mod[[i]]), AICc(linenv.bin.mod[[i]]), AICc(quadenv.bin.mod[[i]]))
   
-  #print(AICc.vec)
+  print(AICc.vec)
   print(AICc.vec - min(AICc.vec))
   
+  summary(env.bin.mod[[i]])
+  summary(linenv.bin.mod[[i]])
+  summary(quadenv.bin.mod[[i]])
 }
 
 #get predictions of best models
